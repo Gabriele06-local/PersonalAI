@@ -1,0 +1,65 @@
+{
+  "name": "personal-ai-desktop",
+  "version": "0.2.0",
+  "private": false,
+  "description": "Desktop launcher per Personal AI (Electron + FastAPI)",
+  "author": "Gabriele Pau",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist:win": "electron-builder --win nsis --config.win.signAndEditExecutable=false --config.win.verifyUpdateCodeSignature=false",
+    "dist:win:unsigned": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& electron-builder --win nsis --config.win.signAndEditExecutable=false --config.win.verifyUpdateCodeSignature=false"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.personalai.desktop",
+    "productName": "Personal AI",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "onboarding.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../app.py",
+        "to": "backend/app.py"
+      },
+      {
+        "from": "../web",
+        "to": "backend/web"
+      },
+      {
+        "from": "../requirements.txt",
+        "to": "backend/requirements.txt"
+      }
+    ],
+    "win": {
+      "icon": "../favicon (7)/favicon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "runAfterFinish": true,
+      "installerIcon": "../favicon (7)/favicon.ico",
+      "uninstallerIcon": "../favicon (7)/favicon.ico"
+    }
+  }
+}

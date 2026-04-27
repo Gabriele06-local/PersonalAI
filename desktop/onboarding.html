@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Personal AI - Onboarding</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #0b1020;
+        color: #e2e8f0;
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 22px auto;
+        padding: 0 16px 24px;
+      }
+      .card {
+        background: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 12px;
+      }
+      .status {
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+      .ok {
+        color: #22c55e;
+      }
+      .ko {
+        color: #f97316;
+      }
+      button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #374151;
+        background: #0f172a;
+        color: #e5e7eb;
+        padding: 10px;
+        margin-top: 8px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        padding: 12px;
+        min-height: 110px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      @media (max-width: 760px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Personal AI Setup</h1>
+      <p>Flusso utente finale: <strong>Installa -> Apri -> Carica</strong>.</p>
+
+      <section class="card">
+        <h3>Stato sistema</h3>
+        <div id="statusOllama" class="status">Ollama: controllo...</div>
+        <div id="statusBackend" class="status">Backend: controllo...</div>
+        <button id="refreshStatusBtn">Aggiorna stato</button>
+      </section>
+
+      <section class="card">
+        <h3>Onboarding AI locale</h3>
+        <div class="grid">
+          <button id="installOllamaBtn">1) Installa Ollama (Windows)</button>
+          <button id="downloadPageBtn">Apri pagina download Ollama</button>
+        </div>
+        <button id="pullModelBtn">2) Scarica modello gemma4:e4b</button>
+        <button id="startBackendBtn">3) Avvia backend Personal AI</button>
+        <button id="openAppBtn">Apri App</button>
+      </section>
+
+      <section class="card">
+        <h3>Log setup</h3>
+        <pre id="logOut">Pronto.</pre>
+      </section>
+    </div>
+
+    <script>
+      const statusOllama = document.getElementById("statusOllama");
+      const statusBackend = document.getElementById("statusBackend");
+      const logOut = document.getElementById("logOut");
+
+      const refreshStatusBtn = document.getElementById("refreshStatusBtn");
+      const installOllamaBtn = document.getElementById("installOllamaBtn");
+      const downloadPageBtn = document.getElementById("downloadPageBtn");
+      const pullModelBtn = document.getElementById("pullModelBtn");
+      const startBackendBtn = document.getElementById("startBackendBtn");
+      const openAppBtn = document.getElementById("openAppBtn");
+
+      function appendLog(text) {
+        logOut.textContent += `\n${text}`;
+      }
+
+      function setStatus(el, label, ok) {
+        el.className = `status ${ok ? "ok" : "ko"}`;
+        el.textContent = `${label}: ${ok ? "OK" : "NON PRONTO"}`;
+      }
+
+      async function refreshStatus() {
+        const s = await window.personalAI.statusAll();
+        setStatus(statusOllama, "Ollama", s.ollama);
+        setStatus(statusBackend, "Backend", s.backend);
+      }
+
+      refreshStatusBtn.addEventListener("click", refreshStatus);
+
+      installOllamaBtn.addEventListener("click", async () => {
+        appendLog("Installazione Ollama in corso...");
+        const out = await window.personalAI.installOllamaWin();
+        appendLog(out.ok ? "Ollama installato." : `Errore: ${out.error}`);
+        await refreshStatus();
+      });
+
+      downloadPageBtn.addEventListener("click", async () => {
+        await window.personalAI.openOllamaDownloadPage();
+      });
+
+      pullModelBtn.addEventListener("click", async () => {
+        appendLog("Download modello gemma4:e4b...");
+        const out = await window.personalAI.pullModel();
+        appendLog(out.ok ? "Modello pronto." : `Errore pull: ${out.output}`);
+      });
+
+      startBackendBtn.addEventListener("click", async () => {
+        appendLog("Avvio backend...");
+        const out = await window.personalAI.startBackend();
+        appendLog(out.ok ? `Backend attivo: ${out.url}` : "Backend non disponibile.");
+        await refreshStatus();
+      });
+
+      openAppBtn.addEventListener("click", async () => {
+        const out = await window.personalAI.openWebApp();
+        if (!out.ok) appendLog(out.error || "Apertura app fallita.");
+      });
+
+      window.personalAI.onPullLog((line) => appendLog(line.trim()));
+      refreshStatus();
+    </script>
+  </body>
+</html>
+

@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Personal AI MVP v1.5</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #0b1220;
+        color: #e5e7eb;
+      }
+      .wrap {
+        max-width: 1000px;
+        margin: 24px auto;
+        padding: 0 16px 32px;
+      }
+      .card {
+        background: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 14px;
+      }
+      h1 {
+        margin-top: 0;
+      }
+      .drop {
+        border: 2px dashed #334155;
+        border-radius: 12px;
+        padding: 24px;
+        text-align: center;
+      }
+      .drop.drag {
+        border-color: #22d3ee;
+        background: #0f172a;
+      }
+      input,
+      button,
+      textarea {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #e5e7eb;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+      button {
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #0f172a;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        padding: 12px;
+      }
+      .small {
+        font-size: 0.9rem;
+        color: #93c5fd;
+      }
+      @media (max-width: 800px) {
+        .row {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Personal AI MVP v1.5</h1>
+      <p class="small">Locale-first RAG + Graph Knowledge Base</p>
+
+      <section class="card">
+        <h3>Upload PDF/TXT</h3>
+        <div id="dropzone" class="drop">
+          Trascina qui un PDF/TXT oppure
+          <input id="fileInput" type="file" accept=".pdf,.txt" />
+        </div>
+        <button id="uploadBtn" style="margin-top: 10px">Carica</button>
+        <pre id="uploadOut">Nessun upload eseguito.</pre>
+      </section>
+
+      <section class="card">
+        <h3>Query Ibrida (RAG + Graph)</h3>
+        <textarea id="question" rows="3" placeholder="Es: mostra collegamenti Startup -> MVP -> Metriche"></textarea>
+        <div class="row" style="margin-top: 10px">
+          <button id="askBtn">Invia Query</button>
+          <button id="refreshGraphBtn">Aggiorna Graph</button>
+        </div>
+        <pre id="answerOut">Nessuna query eseguita.</pre>
+      </section>
+
+      <section class="card">
+        <h3>Graph Snapshot</h3>
+        <div class="row">
+          <button id="exportJsonBtn">Export JSON</button>
+          <button id="exportCsvBtn">Export CSV</button>
+        </div>
+        <pre id="graphOut">Graph non caricato.</pre>
+      </section>
+    </div>
+
+    <script>
+      const dropzone = document.getElementById("dropzone");
+      const fileInput = document.getElementById("fileInput");
+      const uploadBtn = document.getElementById("uploadBtn");
+      const uploadOut = document.getElementById("uploadOut");
+      const askBtn = document.getElementById("askBtn");
+      const questionEl = document.getElementById("question");
+      const answerOut = document.getElementById("answerOut");
+      const refreshGraphBtn = document.getElementById("refreshGraphBtn");
+      const graphOut = document.getElementById("graphOut");
+      const exportJsonBtn = document.getElementById("exportJsonBtn");
+      const exportCsvBtn = document.getElementById("exportCsvBtn");
+
+      let selectedFile = null;
+
+      fileInput.addEventListener("change", () => {
+        selectedFile = fileInput.files[0] || null;
+        uploadOut.textContent = selectedFile ? `Selezionato: ${selectedFile.name}` : "Nessun file selezionato.";
+      });
+
+      dropzone.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        dropzone.classList.add("drag");
+      });
+      dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+      dropzone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("drag");
+        selectedFile = e.dataTransfer.files[0] || null;
+        uploadOut.textContent = selectedFile ? `Drop: ${selectedFile.name}` : "Drop non valido.";
+      });
+
+      uploadBtn.addEventListener("click", async () => {
+        if (!selectedFile) {
+          uploadOut.textContent = "Seleziona prima un file PDF/TXT.";
+          return;
+        }
+        const fd = new FormData();
+        fd.append("file", selectedFile);
+        uploadOut.textContent = "Upload in corso...";
+        try {
+          const res = await fetch("/upload", { method: "POST", body: fd });
+          const data = await res.json();
+          uploadOut.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          uploadOut.textContent = `Errore upload: ${err}`;
+        }
+      });
+
+      askBtn.addEventListener("click", async () => {
+        const question = questionEl.value.trim();
+        if (!question) {
+          answerOut.textContent = "Scrivi una domanda.";
+          return;
+        }
+        answerOut.textContent = "Query in corso...";
+        try {
+          const res = await fetch("/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question, top_k: 4 }),
+          });
+          const data = await res.json();
+          answerOut.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          answerOut.textContent = `Errore query: ${err}`;
+        }
+      });
+
+      refreshGraphBtn.addEventListener("click", loadGraph);
+      exportJsonBtn.addEventListener("click", async () => {
+        const res = await fetch("/export/json");
+        const data = await res.json();
+        graphOut.textContent = JSON.stringify(data, null, 2);
+      });
+      exportCsvBtn.addEventListener("click", async () => {
+        const res = await fetch("/export/csv");
+        const data = await res.json();
+        graphOut.textContent = data.csv || "CSV vuoto.";
+      });
+
+      async function loadGraph() {
+        graphOut.textContent = "Caricamento graph...";
+        try {
+          const res = await fetch("/graph");
+          const data = await res.json();
+          graphOut.textContent = JSON.stringify(
+            {
+              entities: data.entities.length,
+              relations: data.relations.length,
+              latest_relations: data.relations.slice(0, 10),
+            },
+            null,
+            2
+          );
+        } catch (err) {
+          graphOut.textContent = `Errore graph: ${err}`;
+        }
+      }
+
+      loadGraph();
+    </script>
+  </body>
+</html>
+

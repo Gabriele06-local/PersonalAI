@@ -1,0 +1,12 @@
+services:
+  personal-ai:
+    build: .
+    container_name: personal-ai-v15
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_MODEL=gemma4:e4b
+      - EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+    volumes:
+      - ./data:/app/data
