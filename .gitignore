@@ -5,3 +5,4 @@ data/
 desktop/node_modules/
 desktop/dist/
 desktop/*.log
+demo_input.txt
