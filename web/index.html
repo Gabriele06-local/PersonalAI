@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Personal AI MVP v1.5</title>
+    <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
     <style>
       :root {
         color-scheme: dark;
@@ -71,6 +72,74 @@
         font-size: 0.9rem;
         color: #93c5fd;
       }
+      .banner {
+        display: none;
+        background: linear-gradient(90deg, #2563eb, #0ea5e9);
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 14px;
+      }
+      #graphView {
+        height: 420px;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        background: #0f172a;
+      }
+      .path-controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .path-extras {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .path-extra-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .path-extra-row select {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #e5e7eb;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+      .preset-wrap {
+        margin-bottom: 10px;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 10px;
+        background: #0b1220;
+      }
+      .preset-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .preset-buttons button {
+        width: auto;
+      }
+      .path-result-ok {
+        color: #22c55e;
+      }
+      .path-result-warn {
+        color: #f59e0b;
+      }
+      @media (max-width: 800px) {
+        .path-controls {
+          grid-template-columns: 1fr;
+        }
+        .path-extras {
+          grid-template-columns: 1fr;
+        }
+      }
       @media (max-width: 800px) {
         .row {
           grid-template-columns: 1fr;
@@ -82,6 +151,10 @@
     <div class="wrap">
       <h1>Personal AI MVP v1.5</h1>
       <p class="small">Locale-first RAG + Graph Knowledge Base</p>
+      <section id="proBanner" class="banner">
+        <strong>Upgrade Pro:</strong> upload illimitati + export avanzato.
+        <button id="upgradeBtn" style="margin-top: 8px">Prova Pro</button>
+      </section>
 
       <section class="card">
         <h3>Upload PDF/TXT</h3>
@@ -111,6 +184,40 @@
         </div>
         <pre id="graphOut">Graph non caricato.</pre>
       </section>
+
+      <section class="card">
+        <h3>Graph Visualizer</h3>
+        <div class="path-controls">
+          <input id="pathStart" placeholder="Partenza (es: Startup)" />
+          <input id="pathEnd" placeholder="Arrivo (es: Metriche)" />
+          <button id="findPathBtn">Trova Percorso</button>
+          <button id="resetPathBtn">Reset Highlight</button>
+        </div>
+        <div class="path-extras">
+          <label style="display: flex; align-items: center; gap: 8px">
+            <input id="undirected" type="checkbox" checked />
+            Grafi indiretti (bidirezionali)
+          </label>
+          <div class="path-extra-row">
+            <select id="pathTag">
+              <option value="startup">startup</option>
+              <option value="compliance">compliance</option>
+              <option value="finance">finance</option>
+              <option value="custom">custom</option>
+            </select>
+            <label style="display: flex; align-items: center; gap: 6px; white-space: nowrap">
+              <input id="pinPath" type="checkbox" /> Pin
+            </label>
+            <button id="savePathBtn">Salva Preset</button>
+          </div>
+        </div>
+        <div class="preset-wrap">
+          <strong>Path Presets</strong>
+          <div id="presetButtons" class="preset-buttons" style="margin-top: 8px"></div>
+        </div>
+        <div id="graphView"></div>
+        <pre id="graphVisualOut">Visualizzazione non caricata.</pre>
+      </section>
     </div>
 
     <script>
@@ -125,8 +232,23 @@
       const graphOut = document.getElementById("graphOut");
       const exportJsonBtn = document.getElementById("exportJsonBtn");
       const exportCsvBtn = document.getElementById("exportCsvBtn");
+      const proBanner = document.getElementById("proBanner");
+      const upgradeBtn = document.getElementById("upgradeBtn");
+      const graphVisualOut = document.getElementById("graphVisualOut");
+      const graphView = document.getElementById("graphView");
+      const pathStart = document.getElementById("pathStart");
+      const pathEnd = document.getElementById("pathEnd");
+      const findPathBtn = document.getElementById("findPathBtn");
+      const resetPathBtn = document.getElementById("resetPathBtn");
+      const undirectedEl = document.getElementById("undirected");
+      const savePathBtn = document.getElementById("savePathBtn");
+      const pathTag = document.getElementById("pathTag");
+      const pinPath = document.getElementById("pinPath");
+      const presetButtons = document.getElementById("presetButtons");
 
       let selectedFile = null;
+      let cy = null;
+      let lastPathData = null;
 
       fileInput.addEventListener("change", () => {
         selectedFile = fileInput.files[0] || null;
@@ -156,7 +278,14 @@
         try {
           const res = await fetch("/upload", { method: "POST", body: fd });
           const data = await res.json();
+          if (!res.ok) {
+            uploadOut.textContent = JSON.stringify(data, null, 2);
+            return;
+          }
           uploadOut.textContent = JSON.stringify(data, null, 2);
+          await refreshUsage();
+          await loadGraph();
+          await loadGraphVisualizer();
         } catch (err) {
           uploadOut.textContent = `Errore upload: ${err}`;
         }
@@ -193,6 +322,19 @@
         const data = await res.json();
         graphOut.textContent = data.csv || "CSV vuoto.";
       });
+      upgradeBtn.addEventListener("click", async () => {
+        const usageRes = await fetch("/usage");
+        const usage = await usageRes.json();
+        window.open(usage.upgrade_url || "https://gumroad.com/personalai", "_blank");
+      });
+      findPathBtn.addEventListener("click", findPath);
+      resetPathBtn.addEventListener("click", () => {
+        if (!cy) return;
+        cy.elements().removeClass("dim highlight path");
+        cy.fit(cy.elements(), 20);
+        graphVisualOut.textContent = "Highlight resettato.";
+      });
+      savePathBtn.addEventListener("click", saveCurrentPath);
 
       async function loadGraph() {
         graphOut.textContent = "Caricamento graph...";
@@ -213,7 +355,224 @@
         }
       }
 
+      async function refreshUsage() {
+        try {
+          const res = await fetch("/usage");
+          const usage = await res.json();
+          const shouldShowBanner = !usage.pro_enabled && usage.usage_ratio >= 0.8;
+          proBanner.style.display = shouldShowBanner ? "block" : "none";
+        } catch (_err) {
+          // Evita blocchi UI se endpoint usage non risponde.
+        }
+      }
+
+      async function loadGraphVisualizer() {
+        graphVisualOut.textContent = "Caricamento visualizzazione graph...";
+        try {
+          const [nodesRes, edgesRes] = await Promise.all([fetch("/graph/nodes"), fetch("/graph/edges")]);
+          const [nodes, edges] = await Promise.all([nodesRes.json(), edgesRes.json()]);
+          const elements = [
+            ...nodes.map((node) => ({ data: { id: node.id, label: node.data?.label || node.id } })),
+            ...edges.map((edge) => ({
+              data: {
+                id: edge.id,
+                source: edge.source,
+                target: edge.target,
+                label: edge.label || "",
+              },
+            })),
+          ];
+
+          if (!window.cytoscape) {
+            graphVisualOut.textContent = "Cytoscape non disponibile.";
+            return;
+          }
+          if (cy) {
+            cy.destroy();
+            cy = null;
+          }
+          cy = window.cytoscape({
+            container: graphView,
+            elements,
+            style: [
+              {
+                selector: "node",
+                style: {
+                  label: "data(label)",
+                  "background-color": "#38bdf8",
+                  color: "#e2e8f0",
+                  "text-outline-color": "#0f172a",
+                  "text-outline-width": 2,
+                  "font-size": 10,
+                },
+              },
+              {
+                selector: "node.highlight",
+                style: {
+                  "background-color": "#3b82f6",
+                  color: "#ffffff",
+                },
+              },
+              {
+                selector: "edge",
+                style: {
+                  label: "data(label)",
+                  width: 2,
+                  "line-color": "#64748b",
+                  "target-arrow-color": "#64748b",
+                  "target-arrow-shape": "triangle",
+                  "curve-style": "bezier",
+                  "font-size": 8,
+                  color: "#94a3b8",
+                },
+              },
+              {
+                selector: "edge.path",
+                style: {
+                  "line-color": "#f87171",
+                  "target-arrow-color": "#f87171",
+                  width: 4,
+                },
+              },
+              {
+                selector: ".dim",
+                style: {
+                  opacity: 0.2,
+                },
+              },
+            ],
+            layout: {
+              name: "cose",
+              animate: false,
+              fit: true,
+              padding: 20,
+            },
+          });
+          graphVisualOut.textContent = `Graph pronto: ${nodes.length} nodi, ${edges.length} archi.`;
+        } catch (err) {
+          graphVisualOut.textContent = `Errore visualizer: ${err}`;
+        }
+      }
+
+      async function loadPathPresets() {
+        try {
+          const res = await fetch("/paths/presets");
+          const data = await res.json();
+          const presets = Array.isArray(data.presets) ? data.presets : [];
+          presetButtons.innerHTML = "";
+          if (!presets.length) {
+            presetButtons.innerHTML = "<span class='small'>Nessun preset disponibile.</span>";
+            return;
+          }
+          presets.forEach((preset) => {
+            const btn = document.createElement("button");
+            const tag = preset.tag ? `[${preset.tag}] ` : "";
+            const pin = preset.pinned ? "📌 " : "";
+            btn.textContent = `${pin}${tag}${preset.name || `${preset.start} -> ${preset.end}`}`;
+            btn.addEventListener("click", () => {
+              pathStart.value = preset.start || "";
+              pathEnd.value = preset.end || "";
+              if (preset.tag && pathTag) pathTag.value = preset.tag;
+              if (typeof preset.pinned === "boolean") pinPath.checked = !!preset.pinned;
+              findPath();
+            });
+            presetButtons.appendChild(btn);
+          });
+        } catch (_err) {
+          presetButtons.innerHTML = "<span class='small'>Errore caricamento presets.</span>";
+        }
+      }
+
+      async function saveCurrentPath() {
+        if (!lastPathData || !Array.isArray(lastPathData.path) || !lastPathData.path.length) {
+          graphVisualOut.textContent = "Cerca prima un percorso da salvare.";
+          return;
+        }
+        const body = {
+          start: lastPathData.start || pathStart.value.trim(),
+          end: lastPathData.end || pathEnd.value.trim(),
+          path: lastPathData.path,
+          name: `${lastPathData.start || pathStart.value.trim()} -> ${lastPathData.end || pathEnd.value.trim()}`,
+          tag: pathTag.value || "custom",
+          pinned: pinPath.checked,
+        };
+        try {
+          const res = await fetch("/path/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            graphVisualOut.textContent = data.detail || "Errore salvataggio preset.";
+            return;
+          }
+          graphVisualOut.textContent = `Preset salvato (id ${data.id}).`;
+          await loadPathPresets();
+        } catch (err) {
+          graphVisualOut.textContent = `Errore save path: ${err}`;
+        }
+      }
+
+      function edgeSelectorFromPairs(edgePairs) {
+        if (!Array.isArray(edgePairs) || !cy) return cy ? cy.collection() : null;
+        let collection = cy.collection();
+        edgePairs.forEach((pair) => {
+          const match = cy
+            .edges()
+            .filter((edge) => edge.data("source") === pair.source && edge.data("target") === pair.target);
+          collection = collection.union(match);
+        });
+        return collection;
+      }
+
+      async function findPath() {
+        if (!cy) {
+          graphVisualOut.textContent = "Visualizer non pronto.";
+          return;
+        }
+        const start = pathStart.value.trim();
+        const end = pathEnd.value.trim();
+        if (!start || !end) {
+          graphVisualOut.textContent = "Inserisci sia partenza sia arrivo.";
+          return;
+        }
+
+        graphVisualOut.textContent = "Ricerca percorso in corso...";
+        try {
+          const undirected = undirectedEl.checked;
+          const res = await fetch(
+            `/graph/path?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&undirected=${undirected}`
+          );
+          const data = await res.json();
+          if (!res.ok) {
+            graphVisualOut.textContent = data.detail || "Errore ricerca percorso.";
+            return;
+          }
+          if (!Array.isArray(data.path) || data.path.length === 0) {
+            graphVisualOut.textContent = data.message || "Nessun percorso trovato.";
+            return;
+          }
+
+          const nodesToHighlight = cy.nodes().filter((node) => data.node_ids.includes(node.id()));
+          const edgesToHighlight = edgeSelectorFromPairs(data.edge_pairs);
+
+          cy.elements().addClass("dim");
+          nodesToHighlight.removeClass("dim").addClass("highlight");
+          edgesToHighlight.removeClass("dim").addClass("path");
+          cy.fit(nodesToHighlight.union(edgesToHighlight), 35);
+
+          lastPathData = data;
+          graphVisualOut.textContent = `Percorso trovato (${data.hops} hop): ${data.path.join(" -> ")}`;
+        } catch (err) {
+          graphVisualOut.textContent = `Errore path finder: ${err}`;
+        }
+      }
+
+      refreshUsage();
       loadGraph();
+      loadGraphVisualizer();
+      loadPathPresets();
     </script>
   </body>
 </html>

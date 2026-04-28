@@ -6,6 +6,7 @@ import re
 import sqlite3
 import textwrap
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from threading import Lock
 import fitz
 import requests
 from chromadb import PersistentClient
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +36,10 @@ for directory in [DATA_DIR, UPLOAD_DIR, CHROMA_DIR, WEB_DIR]:
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
 EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+FREE_UPLOAD_LIMIT = int(os.getenv("FREE_UPLOAD_LIMIT", "10"))
+GUMROAD_UPGRADE_URL = os.getenv("GUMROAD_UPGRADE_URL", "https://gumroad.com/personalai")
+UPGRADE_SECRET = os.getenv("UPGRADE_SECRET", "local-dev-upgrade-secret")
+PRO_STATUS_PATH = DATA_DIR / "pro_status.json"
 
 
 app = FastAPI(title="Personal AI MVP v1.5", version="1.5.0")
@@ -96,6 +101,30 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS saved_paths (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                start_node TEXT NOT NULL,
+                end_node TEXT NOT NULL,
+                path_json TEXT NOT NULL,
+                user_id INTEGER,
+                tag TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                created TEXT NOT NULL
+            )
+            """
+        )
+        # Migrazione leggera per installazioni gia esistenti.
+        try:
+            conn.execute("ALTER TABLE saved_paths ADD COLUMN tag TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE saved_paths ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
     finally:
         conn.close()
@@ -109,8 +138,118 @@ class QueryRequest(BaseModel):
     top_k: int = 4
 
 
+class UpgradeRequest(BaseModel):
+    enabled: bool = True
+
+
+class SavePathRequest(BaseModel):
+    start: str
+    end: str
+    path: list[str]
+    user_id: int | None = None
+    name: str | None = None
+    tag: str | None = None
+    pinned: bool = False
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def get_pro_status() -> bool:
+    if not PRO_STATUS_PATH.exists():
+        return False
+    try:
+        payload = json.loads(PRO_STATUS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(payload.get("enabled", False))
+
+
+def set_pro_status(enabled: bool) -> None:
+    PRO_STATUS_PATH.write_text(
+        json.dumps({"enabled": enabled, "updated_at": utc_now_iso()}, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+
+
+def get_upload_count() -> int:
+    files = [p for p in UPLOAD_DIR.glob("*") if p.is_file()]
+    return len(files)
+
+
+def get_usage_summary() -> dict[str, Any]:
+    current_uploads = get_upload_count()
+    pro_enabled = get_pro_status()
+    can_upload = pro_enabled or current_uploads < FREE_UPLOAD_LIMIT
+    return {
+        "plan": "pro" if pro_enabled else "free",
+        "pro_enabled": pro_enabled,
+        "uploads_count": current_uploads,
+        "uploads_limit": None if pro_enabled else FREE_UPLOAD_LIMIT,
+        "remaining_uploads": None if pro_enabled else max(0, FREE_UPLOAD_LIMIT - current_uploads),
+        "usage_ratio": 0.0 if pro_enabled else (current_uploads / max(1, FREE_UPLOAD_LIMIT)),
+        "can_upload": can_upload,
+        "upgrade_url": GUMROAD_UPGRADE_URL,
+    }
+
+
+def make_graph_node_id(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return base or "node"
+
+
+def normalize_entity_name(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def build_node_map(entity_rows: list[tuple[str, str]], relation_rows: list[tuple[str, str]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    node_map: dict[str, str] = {}
+    type_map: dict[str, str] = {name: ent_type for (name, ent_type) in entity_rows}
+    nodes: list[dict[str, Any]] = []
+
+    all_names: list[str] = []
+    for (name, _) in entity_rows:
+        if name not in all_names:
+            all_names.append(name)
+    for (source, target) in relation_rows:
+        if source not in all_names:
+            all_names.append(source)
+        if target not in all_names:
+            all_names.append(target)
+
+    used_ids: set[str] = set()
+    for name in all_names:
+        candidate = make_graph_node_id(name)
+        unique_id = candidate
+        suffix = 2
+        while unique_id in used_ids:
+            unique_id = f"{candidate}-{suffix}"
+            suffix += 1
+        used_ids.add(unique_id)
+        node_map[name] = unique_id
+        nodes.append(
+            {
+                "id": unique_id,
+                "data": {"label": name, "type": type_map.get(name, "Concept")},
+            }
+        )
+    return nodes, node_map
+
+
+@app.middleware("http")
+async def freemium_limit_middleware(request: Request, call_next):
+    if request.url.path == "/upload" and request.method.upper() == "POST":
+        usage = get_usage_summary()
+        if not usage["can_upload"]:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": f"Hai raggiunto il limite Free ({FREE_UPLOAD_LIMIT} upload). Upgrade Pro per sbloccare upload illimitati.",
+                    "upgrade_url": GUMROAD_UPGRADE_URL,
+                },
+            )
+    return await call_next(request)
 
 
 def read_pdf_text(file_path: Path) -> str:
@@ -310,7 +449,20 @@ def root() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "model": OLLAMA_MODEL}
+    return {"ok": True, "model": OLLAMA_MODEL, "usage": get_usage_summary()}
+
+
+@app.get("/usage")
+def usage() -> dict[str, Any]:
+    return get_usage_summary()
+
+
+@app.post("/upgrade")
+def upgrade(payload: UpgradeRequest, request: Request) -> dict[str, Any]:
+    if request.headers.get("x-upgrade-secret") != UPGRADE_SECRET:
+        raise HTTPException(status_code=401, detail="Secret upgrade non valido")
+    set_pro_status(payload.enabled)
+    return {"ok": True, "usage": get_usage_summary()}
 
 
 @app.post("/upload")
@@ -421,6 +573,257 @@ def graph() -> dict[str, Any]:
             for row in relations
         ],
     }
+
+
+@app.get("/graph/nodes")
+def graph_nodes(limit: int = 120) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        entities = conn.execute(
+            "SELECT DISTINCT name, type FROM entities ORDER BY id DESC LIMIT ?",
+            (max(10, min(limit, 500)),),
+        ).fetchall()
+        relations = conn.execute(
+            "SELECT source, target FROM relations ORDER BY id DESC LIMIT ?",
+            (max(20, min(limit * 2, 1000)),),
+        ).fetchall()
+    finally:
+        conn.close()
+    nodes, _ = build_node_map(entities, relations)
+    return nodes
+
+
+@app.get("/graph/edges")
+def graph_edges(limit: int = 200) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        entities = conn.execute(
+            "SELECT DISTINCT name, type FROM entities ORDER BY id DESC LIMIT ?",
+            (max(10, min(limit, 500)),),
+        ).fetchall()
+        relations = conn.execute(
+            "SELECT source, target, strength FROM relations ORDER BY id DESC LIMIT ?",
+            (max(20, min(limit, 1000)),),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    simple_rel = [(row[0], row[1]) for row in relations]
+    _, node_map = build_node_map(entities, simple_rel)
+    edges = []
+    for idx, (source_name, target_name, strength) in enumerate(relations):
+        source_id = node_map.get(source_name)
+        target_id = node_map.get(target_name)
+        if not source_id or not target_id:
+            continue
+        edges.append(
+            {
+                "id": f"e-{idx}-{source_id}-{target_id}",
+                "source": source_id,
+                "target": target_id,
+                "label": f"{float(strength):.2f}",
+                "strength": float(strength),
+            }
+        )
+    return edges
+
+
+@app.get("/graph/path")
+def graph_path(start: str, end: str, undirected: bool = False) -> dict[str, Any]:
+    start_norm = normalize_entity_name(start)
+    end_norm = normalize_entity_name(end)
+    if not start_norm or not end_norm:
+        raise HTTPException(status_code=400, detail="Parametri start/end obbligatori")
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        relations = conn.execute(
+            "SELECT source, target FROM relations ORDER BY id DESC LIMIT 5000"
+        ).fetchall()
+        entities = conn.execute(
+            "SELECT DISTINCT name, type FROM entities ORDER BY id DESC LIMIT 1500"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # Mappa normalizzata -> display originale.
+    display_name: dict[str, str] = {}
+    for name, _ in entities:
+        key = normalize_entity_name(name)
+        if key and key not in display_name:
+            display_name[key] = name
+    for source, target in relations:
+        source_key = normalize_entity_name(source)
+        target_key = normalize_entity_name(target)
+        if source_key and source_key not in display_name:
+            display_name[source_key] = source
+        if target_key and target_key not in display_name:
+            display_name[target_key] = target
+
+    if start_norm not in display_name or end_norm not in display_name:
+        return {
+            "path": [],
+            "node_ids": [],
+            "edge_pairs": [],
+            "message": "Entita non trovata nel graph",
+            "start": start,
+            "end": end,
+        }
+
+    adjacency: dict[str, set[str]] = {}
+    for source, target in relations:
+        src = normalize_entity_name(source)
+        tgt = normalize_entity_name(target)
+        if not src or not tgt:
+            continue
+        adjacency.setdefault(src, set()).add(tgt)
+        if undirected:
+            adjacency.setdefault(tgt, set()).add(src)
+
+    queue = deque([(start_norm, [start_norm])])
+    visited = {start_norm}
+    found_path: list[str] | None = None
+
+    while queue:
+        current, path = queue.popleft()
+        if current == end_norm:
+            found_path = path
+            break
+        for nxt in adjacency.get(current, set()):
+            if nxt in visited:
+                continue
+            visited.add(nxt)
+            queue.append((nxt, path + [nxt]))
+
+    if not found_path:
+        return {
+            "path": [],
+            "node_ids": [],
+            "edge_pairs": [],
+            "message": "Nessun percorso trovato",
+            "start": display_name[start_norm],
+            "end": display_name[end_norm],
+        }
+
+    # Costruzione IDs coerenti con /graph/nodes.
+    relation_pairs = [(row[0], row[1]) for row in relations]
+    _, node_map = build_node_map(entities, relation_pairs)
+    node_ids = [node_map.get(display_name[n], "") for n in found_path]
+    edge_pairs: list[dict[str, str]] = []
+    for i in range(len(found_path) - 1):
+        src_name = display_name[found_path[i]]
+        tgt_name = display_name[found_path[i + 1]]
+        edge_pairs.append(
+            {
+                "source": node_map.get(src_name, ""),
+                "target": node_map.get(tgt_name, ""),
+            }
+        )
+
+    return {
+        "path": [display_name[n] for n in found_path],
+        "node_ids": [nid for nid in node_ids if nid],
+        "edge_pairs": [pair for pair in edge_pairs if pair["source"] and pair["target"]],
+        "hops": max(0, len(found_path) - 1),
+        "start": display_name[start_norm],
+        "end": display_name[end_norm],
+        "undirected": undirected,
+    }
+
+
+@app.post("/path/save")
+def save_path_frequent(payload: SavePathRequest) -> dict[str, Any]:
+    start = payload.start.strip()
+    end = payload.end.strip()
+    if not start or not end:
+        raise HTTPException(status_code=400, detail="start/end obbligatori")
+    if not payload.path:
+        raise HTTPException(status_code=400, detail="path non puo essere vuoto")
+
+    name = payload.name.strip() if payload.name else f"{start} -> {end}"
+    tag = payload.tag.strip().lower() if payload.tag else None
+    pinned = 1 if payload.pinned else 0
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO saved_paths (name, start_node, end_node, path_json, user_id, tag, pinned, created)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                start,
+                end,
+                json.dumps(payload.path, ensure_ascii=True),
+                payload.user_id,
+                tag,
+                pinned,
+                utc_now_iso(),
+            ),
+        )
+        conn.commit()
+        saved_id = cursor.lastrowid
+    finally:
+        conn.close()
+    return {"ok": True, "id": saved_id}
+
+
+@app.get("/paths/presets")
+def get_preset_paths(user_id: int | None = None, limit: int = 10) -> dict[str, Any]:
+    defaults = [
+        {"name": "Startup Journey", "start": "Startup", "end": "Funding", "kind": "default", "tag": "startup", "pinned": True},
+        {
+            "name": "Compliance IVA -> Sanzione",
+            "start": "IVA",
+            "end": "Sanzione",
+            "kind": "default",
+            "tag": "compliance",
+            "pinned": True,
+        },
+    ]
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        bounded_limit = max(1, min(limit, 50))
+        if user_id is None:
+            rows = conn.execute(
+                """
+                SELECT id, name, start_node, end_node, tag, pinned, created
+                FROM saved_paths
+                ORDER BY pinned DESC, id DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, name, start_node, end_node, tag, pinned, created
+                FROM saved_paths
+                WHERE user_id = ?
+                ORDER BY pinned DESC, id DESC
+                LIMIT ?
+                """,
+                (user_id, bounded_limit),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    saved = [
+        {
+            "id": row[0],
+            "name": row[1] or f"{row[2]} -> {row[3]}",
+            "start": row[2],
+            "end": row[3],
+            "tag": row[4] or "custom",
+            "pinned": bool(row[5]),
+            "created": row[6],
+            "kind": "saved",
+        }
+        for row in rows
+    ]
+    allowed_saved = max(0, max(1, min(limit, 50)) - len(defaults))
+    return {"presets": defaults + saved[:allowed_saved]}
 
 
 @app.get("/export/{kind}")

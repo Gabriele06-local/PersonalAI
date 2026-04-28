@@ -1,85 +1,128 @@
-# Personal AI MVP v1.5
+# Personal AI - MVP v1.5
 
-Locale-first RAG + Graph Knowledge Base:
-- Upload PDF/TXT
-- Chunking + embedding su ChromaDB
-- Estrazione entita/relazioni su SQLite
-- Query ibride (RAG + Graph)
+`Personal AI` e un assistente locale che unisce due approcci:
+- **RAG vettoriale** (recupero contesto da documenti)
+- **Knowledge Graph** (entita e relazioni salvate nel tempo)
 
-## Avvio rapido
+In pratica: carichi file, fai domande, e ottieni risposte con contesto + collegamenti tra concetti.
 
+## Cosa fa oggi
+
+### 1) Upload e indicizzazione documenti
+- Accetta file `PDF` e `TXT`
+- Estrae testo (PyMuPDF per PDF)
+- Divide il testo in chunk
+- Crea embedding su ChromaDB persistente
+- Estrae entita/relazioni e le salva in SQLite
+
+### 2) Query ibrida
+- Endpoint domanda: combina risultati RAG + relazioni graph
+- Se Ollama e disponibile, genera una risposta LLM completa
+- Se Ollama non e disponibile, usa fallback e restituisce comunque contesto utile
+
+### 3) Storico conoscenza
+- Il graph viene salvato su database locale (`SQLite`)
+- Ogni relazione ha timestamp e sorgente documento
+- E possibile esportare relazioni in JSON/CSV
+
+### 4) UI Web pronta
+- Interfaccia su `http://127.0.0.1:8000`
+- Drag&drop file
+- Query testuale
+- Snapshot graph + export
+- Graph Visualizer interattivo (Cytoscape)
+- Path Finder (`start -> end`) con highlight e zoom
+- Toggle grafi diretti/indiretti
+- Presets path salvabili con tag e pin
+
+### 5) Freemium base
+- Limite piano Free su upload (`FREE_UPLOAD_LIMIT`, default 10)
+- Banner upgrade quando uso supera l'80%
+- Endpoint usage e upgrade per gestione stato piano
+
+### 6) Launcher Desktop (Electron)
+- Presente in `desktop/`
+- Onboarding con:
+  - check backend
+  - check/install Ollama (Windows via winget)
+  - pull modello `gemma4:e4b`
+  - apertura app automatica
+
+---
+
+## Stack attuale
+
+- **Backend:** FastAPI (`app.py`)
+- **Embedding:** `sentence-transformers/all-MiniLM-L6-v2`
+- **Vector DB:** ChromaDB (persistente)
+- **Graph DB:** SQLite (`entities`, `relations`)
+- **LLM locale:** Ollama (`gemma4:e4b`)
+- **Desktop wrapper:** Electron + electron-builder
+
+---
+
+## Avvio rapido (sviluppo locale)
+
+### Modalita Python
 ```bash
-docker-compose up --build
+python -m pip install -r requirements.txt
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Apri: `http://localhost:8000`
+Apri poi: `http://127.0.0.1:8000`
 
-## Endpoint principali
-
-- `POST /upload` file PDF/TXT
-- `POST /query` body: `{"question":"...", "top_k":4}`
-- `GET /graph`
-- `GET /export/json`
-- `GET /export/csv`
-
-## Note runtime
-
-- Richiede Ollama in esecuzione locale con modello `gemma4:e4b`.
-- Se Ollama non e disponibile, il sistema usa fallback euristico per il graph e risponde con contesto grezzo.
-
-## Desktop v2 (Electron onboarding)
-
-Nel percorso `desktop/` trovi un launcher desktop con onboarding guidato:
-- check backend
-- check/install Ollama (Windows via winget)
-- pull modello `gemma4:e4b`
-- apertura automatica dell'app web
-
-Comandi:
-
+### Modalita Desktop
 ```bash
 cd desktop
 npm install
 npm start
 ```
 
-Il backend FastAPI viene avviato automaticamente dal launcher.
+---
 
-### Packaging `.exe` (Windows)
+## Packaging Windows (.exe)
 
 Da `desktop/`:
 
 ```bash
-npm install
 npm run dist:win
 ```
 
-Output installer:
-- `desktop/dist/*.exe`
+Output:
+- `desktop/dist/Personal AI Setup <versione>.exe`
 
-Nota:
-- Il launcher desktop include onboarding automatico Ollama.
-- Per eseguire il backend, sulla macchina utente deve essere disponibile Python nel `PATH` (step successivo consigliato: bundle runtime Python dedicato).
+Icona app/installer:
+- `favicon (7)/favicon.ico`
 
-### Branding desktop
+---
 
-- Icona app/installer: `favicon (7)/favicon.ico`
-- Publisher metadata: campo `author` in `desktop/package.json`
+## API principali
 
-## Preparazione repo pubblica
+- `POST /upload` -> upload PDF/TXT
+- `POST /query` -> body `{"question":"...", "top_k":4}`
+- `GET /graph` -> entita + relazioni recenti
+- `GET /graph/nodes` -> nodi per visualizer
+- `GET /graph/edges` -> archi per visualizer
+- `GET /graph/path?start=A&end=B&undirected=true|false` -> percorso nel graph
+- `POST /path/save` -> salva percorso frequente
+- `GET /paths/presets` -> preset default + salvati (tag/pin)
+- `GET /usage` -> stato piano freemium/pro
+- `GET /export/json` -> export graph JSON
+- `GET /export/csv` -> export relazioni CSV
+- `GET /health` -> stato servizio
 
-Checklist gia completata:
-- licenza MIT aggiunta (`LICENSE`)
-- build artifacts esclusi (`desktop/dist/`, `desktop/node_modules/`)
-- metadata desktop aggiornati per distribuzione
+---
 
-Comandi push base:
+## Limiti attuali (MVP)
 
-```bash
-git init
-git add .
-git commit -m "feat: add Personal AI desktop onboarding and windows packaging"
-git branch -M main
-git remote add origin https://github.com/<tuo-utente>/<tuo-repo>.git
-git push -u origin main
-```
+- Nessuna autenticazione utenti (single-user locale)
+- Possibili duplicati se si ricarica lo stesso file piu volte
+- Per risposta LLM completa serve Ollama attivo in locale
+- Su desktop e richiesto Python disponibile nel `PATH`
+- Endpoint `POST /upgrade` usa secret header (`x-upgrade-secret`) pensato per ambiente dev/demo
+
+---
+
+## Licenza
+
+MIT. Vedi file `LICENSE`.
